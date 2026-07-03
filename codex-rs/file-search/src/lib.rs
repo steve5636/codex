@@ -14,6 +14,7 @@ use nucleo::Utf32String;
 use nucleo::pattern::CaseMatching;
 use nucleo::pattern::Normalization;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::num::NonZero;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use tokio::process::Command;
+use unicode_normalization::UnicodeNormalization;
 
 #[cfg(test)]
 use nucleo::Utf32Str;
@@ -396,6 +398,43 @@ fn get_file_path<'a>(path: &'a Path, search_directories: &[PathBuf]) -> Option<(
     rel_path.to_str().map(|p| (root_idx, p))
 }
 
+fn map_normalized_indices_to_original(path: &str, normalized_indices: &[u32]) -> Vec<u32> {
+    if path.is_ascii() {
+        return normalized_indices.to_vec();
+    }
+
+    let mut prefix = String::new();
+    let mut previous_normalized_len = 0;
+    let mut normalized_to_original = Vec::<Vec<u32>>::new();
+    for (original_idx, ch) in path.chars().enumerate() {
+        prefix.push(ch);
+        let next_normalized_len = prefix.nfc().count();
+        if next_normalized_len > previous_normalized_len {
+            normalized_to_original.resize_with(next_normalized_len, Vec::new);
+            for original_indices in normalized_to_original
+                .iter_mut()
+                .take(next_normalized_len)
+                .skip(previous_normalized_len)
+            {
+                original_indices.push(original_idx as u32);
+            }
+        } else if next_normalized_len > 0 {
+            normalized_to_original[next_normalized_len - 1].push(original_idx as u32);
+        }
+        previous_normalized_len = next_normalized_len;
+    }
+
+    let mut original_indices = Vec::new();
+    for normalized_idx in normalized_indices {
+        if let Some(indices) = normalized_to_original.get(*normalized_idx as usize) {
+            original_indices.extend(indices);
+        }
+    }
+    original_indices.sort_unstable();
+    original_indices.dedup();
+    original_indices
+}
+
 /// Walks the search directories and feeds discovered paths into `nucleo`
 /// via the injector.
 ///
@@ -464,7 +503,17 @@ fn walker_worker(
             };
             if let Some((_, relative_path)) = get_file_path(path, &search_directories) {
                 injector.push(Arc::from(full_path), |_, cols| {
-                    cols[0] = Utf32String::from(relative_path);
+                    let normalized_path = if relative_path.is_ascii() {
+                        Cow::Borrowed(relative_path)
+                    } else {
+                        let normalized = relative_path.nfc().collect::<String>();
+                        if normalized == relative_path {
+                            Cow::Borrowed(relative_path)
+                        } else {
+                            Cow::Owned(normalized)
+                        }
+                    };
+                    cols[0] = Utf32String::from(normalized_path.as_ref());
                 });
             }
             n += 1;
@@ -555,7 +604,7 @@ fn matcher_worker(
                                 let _ = pattern.indices(haystack, indices_matcher, &mut idx_vec);
                                 idx_vec.sort_unstable();
                                 idx_vec.dedup();
-                                Some(idx_vec)
+                                Some(map_normalized_indices_to_original(relative_path, &idx_vec))
                             } else {
                                 None
                             };
@@ -1010,6 +1059,34 @@ mod tests {
             m.path == std::path::Path::new("docs").join("guides")
                 && m.match_type == MatchType::Directory
         }));
+    }
+
+    #[test]
+    fn run_matches_composed_korean_query_when_filename_is_decomposed() {
+        let dir = tempfile::tempdir().unwrap();
+        let decomposed_filename = "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}.txt";
+        fs::write(dir.path().join(decomposed_filename), "hangul").unwrap();
+
+        let results = run(
+            "한글",
+            vec![dir.path().to_path_buf()],
+            FileSearchOptions {
+                limit: NonZero::new(20).unwrap(),
+                exclude: Vec::new(),
+                threads: NonZero::new(2).unwrap(),
+                compute_indices: true,
+                respect_gitignore: true,
+            },
+            /*cancel_flag*/ None,
+        )
+        .expect("run ok");
+
+        let file_match = results
+            .matches
+            .iter()
+            .find(|m| m.path.as_path() == Path::new(decomposed_filename))
+            .expect("decomposed filename should match composed query");
+        assert_eq!(file_match.indices, Some(vec![0, 1, 2, 3, 4, 5]));
     }
 
     #[test]

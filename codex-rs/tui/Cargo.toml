@@ -116,6 +116,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 syntect = "5"
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-onig"] }
 unicode-segmentation = { workspace = true }
+unicode-normalization = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }

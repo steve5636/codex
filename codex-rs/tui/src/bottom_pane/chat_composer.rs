@@ -154,6 +154,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::WidgetRef;
+use unicode_normalization::UnicodeNormalization;
 
 use super::chat_composer_history::ChatComposerHistory;
 use super::chat_composer_history::HistoryEntry;
@@ -882,7 +883,8 @@ impl ChatComposer {
         {
             self.draft.textarea.insert_str(" ");
         } else {
-            self.insert_str(&pasted);
+            let display_text = pasted.nfc().collect::<String>();
+            self.insert_str(&display_text);
         }
         self.draft.paste_burst.clear_after_explicit_paste();
         self.sync_popups();
@@ -7488,6 +7490,56 @@ mod tests {
         match result {
             InputResult::Submitted { text, .. } => assert_eq!(text, "hello"),
             _ => panic!("expected Submitted"),
+        }
+    }
+
+    #[test]
+    fn handle_paste_decomposed_korean_text_inserts_composed_text() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let needs_redraw = composer.handle_paste(
+            "2026\u{1102}\u{1167}\u{11AB}\u{1103}\u{1169} \u{1103}\u{1166}\u{110B}\u{1175}\u{1110}\u{1165} \u{1109}\u{116E}\u{110C}\u{1175}\u{11B8}".to_string(),
+        );
+
+        assert!(needs_redraw);
+        assert_eq!(composer.draft.textarea.text(), "2026년도 데이터 수집");
+
+        let area = Rect::new(0, 0, 80, 6);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+        let rendered = (0..area.height)
+            .map(|y| {
+                let mut row = String::new();
+                for x in 0..area.width {
+                    row.push_str(buf[(x, y)].symbol());
+                }
+                row
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("2026"));
+        for syllable in ["년", "도", "데", "이", "터", "수", "집"] {
+            assert!(
+                rendered.contains(syllable),
+                "rendered composer should contain composed Korean character {syllable}: {rendered}",
+            );
+        }
+        for jamo in [
+            '\u{1102}', '\u{1167}', '\u{11AB}', '\u{1103}', '\u{1169}', '\u{1166}', '\u{110B}',
+            '\u{1175}', '\u{1110}', '\u{1165}', '\u{1109}', '\u{116E}', '\u{110C}', '\u{11B8}',
+        ] {
+            assert!(
+                !rendered.contains(jamo),
+                "rendered composer should not contain decomposed Korean jamo {jamo}: {rendered}",
+            );
         }
     }
 

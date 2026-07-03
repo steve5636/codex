@@ -3097,6 +3097,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -4171,6 +4172,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "two-face",
+ "unicode-normalization",
  "unicode-segmentation",
  "unicode-width 0.2.1",
  "url",
